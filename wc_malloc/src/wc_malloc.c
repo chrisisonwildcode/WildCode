@@ -19,6 +19,35 @@
 
 #include "wc_malloc.h"
 
+struct _wc_chunk {
+  void *ptr;
+  size_t size;
+  int inuse;
+  void *base_ptr;
+  size_t base_size;
+  struct _wc_chunk *next;
+};
+
+struct _wc_chunk *wc_chunks;
+
+static void split_chunk (struct _wc_chunk *chunk, size_t size) {
+  struct _wc_chunk *new_chunk;
+  size_t new_size;
+  
+  if ((chunk == NULL) || (size >= chunk->size))
+    return;
+  
+  new_size = chunk->size - size;
+  new_chunk = new(sizeof(struct _wc_chunk) * new_size);
+  new_chunk->next = chunk->next;
+  new_chunk->ptr = chunk->ptr + size;
+  new_chunk->size = new_size;
+  new_chunk->inuse = 0;
+  new_chunk->base_ptr = chunk->base_ptr;
+  new_chunk->base_size = chunk-->base_size;
+  chunk->next = new_chunk;
+  chunk->size = size;
+}
 
 // Initialise the heap index
 int init_wc_mem() {
