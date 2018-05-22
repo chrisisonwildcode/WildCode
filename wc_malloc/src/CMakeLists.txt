@@ -19,6 +19,4 @@ SET(EXECUTABLE_OUTPUT_PATH "${CMAKE_BINARY_DIR}")
 
 INSTALL(TARGETS wildcode_malloc DESTINATION bin)
 
-SET(WARNINGS "/Wall") # Since windows can only disable specific warnings, not enable them
-
 SET_TARGET_PROPERTIES(wildcode_malloc PROPERTIES COMPILE_FLAGS "${WARNINGS} ${MT_BUILD}")
