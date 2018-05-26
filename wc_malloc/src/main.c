@@ -18,7 +18,9 @@
 */
 
 #include <stdio.h>
-#include <time.h>
+#include <sys/time.h>
+#include <stdlib.h>
+#include <strings.h>
 
 #include "wc_malloc.h"
 
@@ -27,48 +29,57 @@ void *buffer[10000] = { NULL };
 void test_sys_malloc() {
     int i = 0;
     
-    printf("Testing malloc/free\r\n");
+    struct timeval time_before, time_after, time_result;
     
-    printf("Start: %li\r\n", time(NULL));
-    
+    gettimeofday(&time_before, NULL);
     for (i = 0; i < 10000; i++) {
         buffer[i] = malloc(128);
+        bzero(buffer[i], 128);
     }
+    gettimeofday(&time_after, NULL);
+    timersub(&time_after, &time_before, &time_result);
+    printf("Time elapsed: %ld.%06ld\n", (long int)time_result.tv_sec, (long int)time_result.tv_usec);
+
     for (i = 0; i < 10000; i++) {
         free(buffer[i]);
     }
-    
-    printf("Stop: %li\r\n", time(NULL));
-    
+    timersub(&time_after, &time_before, &time_result);
+    printf("Time elapsed: %ld.%06ld\n", (long int)time_result.tv_sec, (long int)time_result.tv_usec);
+
 }
 
 void test_wc_malloc() {
-    int i = 0;
-    
-    printf("Testing wc_malloc/free\r\n");
-    
-    printf("Start: %li\r\n", time(NULL));
-    
-    init_wc_mem();
+    long int i = 0;
+    struct timeval time_before, time_after, time_result;
+
+    gettimeofday(&time_before, NULL);
+    wc_malloc_init();
     for (i = 0; i < 10000; i++) {
         buffer[i] = wc_malloc(128);
+        bzero(buffer[i], 128);
     }
+    gettimeofday(&time_after, NULL);
+    timersub(&time_after, &time_before, &time_result);
+    printf("Time elapsed: %ld.%06ld\n", (long int)time_result.tv_sec, (long int)time_result.tv_usec);
+
     for (i = 0; i < 10000; i++) {
         wc_free(buffer[i]);
     }
-    shutdown_wc_mem();
-    
-    printf("Stop: %li\r\n", time(NULL));
-    
+    gettimeofday(&time_after, NULL);
+    timersub(&time_after, &time_before, &time_result);
+    printf("Time elapsed: %ld.%06ld\n", (long int)time_result.tv_sec, (long int)time_result.tv_usec);
+
 }
 
 
 
 int main(int argc, char *argv[]) {
-    
-    test_sys_malloc();
-    
+
+	for (int i = 0; i < 10; i++) {
+//   printf("Testing malloc\r\n")
+	test_sys_malloc();
+//    printf("Testing wc_malloc\r\n");
     test_wc_malloc();
-    
+	}
     return 0;
 }

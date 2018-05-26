@@ -1,224 +1,198 @@
 /*
-  wc_malloc.c - Experimental memory performance
+ wc_malloc.c - Experimental memory performance
  
-  Copyright (C) Chris Ison 2018
+ Copyright (C) Chris Ison 2018
  
-  This program is free software: you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
  
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
  
-  You should have received a copy of the GNU General Public License
-  along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 
-#include <sys/mman.h>
+/*
+ * Developer Notes
+ *
+ * Error Checking:
+ * 		Limited checking is done as each check is a potential bottle
+ * 		neck. The idea is to strip away as much as possible to gain as
+ * 		much performance as possible. Much care should be given in avoiding
+ * 		situations where more error checking is needed here.
+ *
+ * Experimental:
+ * 		Because of the experimental nature of this it should not be used
+ * 		in critical systems as issues are expected (even if not encountered).
+ *
+ * Two potential failure points:
+ * 		First of these failure points is running out ram to assign more
+ * 		chunk data. Second is running out of ram to assign more chunks.
+ * 		Both failures will result in NULL being returned when calling
+ * 		wc_[malloc|calloc|realloc]. In the case of wc_realloc the data pointed
+ * 		to by ptr is unchanged.
+ *
+ * Zero size equals NULL return:
+ * 		With wc_[malloc|calloc|realloc] requesting a size of 0 will return
+ * 		a NULL result. With wc_realloc a 0 size request will be treated as
+ * 		wc_free(ptr). with wc_calloc a 0 nmem also results in a NULL return.
+ *
+ * Expected behaviour:
+ * 		TODO: void wc_free(void *ptr); releases memory pointed to by ptr back into
+ * 		the pool.
+ *
+ * 		void *wc_malloc(size_t size); returns a pointer to an amount of memory
+ * 		allocated equal to size bytes. Returns NULL on failure, or if size is 0.
+ *
+ * 		void *wc_calloc(size_t nmem, size_t size); returns a pointer to an
+ * 		amount of memory allocated equal to nmem * size bytes. Returns NULL
+ * 		on failure, or if nmem or size is 0.
+ *
+ * 		void *wc_realloc(void *ptr, size_t size); returns a pointer to an amount
+ * 		of memory allocated equal to size bytes. if ptr != NULL it will change
+ * 		the allocated amount to size bytes, and if the return address is different
+ * 		will copy contents of ptr to new location and release ptr. On failure
+ * 		returns NULL and the data in ptr remains unchanged and accessible.
+ * 		If size is 0 it behaves as if wc_free(ptr) were called;
+ *
+ * 		See each function for each individual internal behavior.
+ */
+
+//#define _POSIX_C_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
 #include <unistd.h>
 
 #include "wc_malloc.h"
 
-struct _wc_chunk {
-  void *ptr;
-  size_t size;
-  int inuse;
-  void *base_ptr;
-  size_t base_size;
-  struct _wc_chunk *next;
-};
+void *base_heap = NULL;
+void *heap_end = NULL;
+void *soft_heap_end = NULL;
 
-struct _wc_chunk *wc_chunks;
+#define MIN_PAGE_GRAB 3
 
-// Only call this if we truely need more ram.
-static struct _wc_chunk *_wc_new_chunk (size_t size) {
-    // grap ram for pointer
-    struct _wc_chunk *chunk = mmap(NULL, sizeof(struct _wc_chunk), PROT_READ | PROT_WRITE, MAP_ANONYMOUS, 0, 0);
-   
-    // we want enough pages of ram to fit data
-    int page_size = sysconf(_SC_PAGESIZE);
-    chunk->base_size = ((size / page_size) + 1) * page_size;
-    
-    // grab ram
-    chunk->base_ptr = mmap(NULL, chunk->base_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS, 0, 0);
-    
-    // set up the pointer
-    chunk->ptr = chunk->base_ptr;
-    chunk->size = chunk->base_size;
-    chunk->inuse = 0;
-    
-    // make pointer first on list
-    chunk->next = wc_chunks;
-    wc_chunks = chunk;
-    return chunk;
+size_t page_size = 4096;
+
+#define _HHEADER_SIZE sizeof(unsigned long)
+unsigned long msbL = 0;
+unsigned long scan_filter = 0;
+
+int wc_malloc_init() {
+	unsigned long new_size = 0;
+
+	msbL = 1L << ((_HHEADER_SIZE * 8L) - 1L);
+	scan_filter = msbL - 1L;
+	page_size = sysconf(_SC_PAGE_SIZE);
+	new_size = page_size * MIN_PAGE_GRAB;
+	base_heap = sbrk(new_size);
+	heap_end = base_heap + new_size;
+	*(unsigned long *)base_heap = new_size;
+	soft_heap_end = heap_end;
+
+	return 0;
 }
 
-// joins 2 adjacent "empty" chunks belonging to same base together
-static void check_next_chunk(struct _wc_chunk *chunk) {
-    // make sure we have something to check;
-    struct _wc_chunk *next_chunk = NULL;
-    if (chunk == NULL)
-        return;
-    
-    if (chunk->next == NULL)
-        return;
-    
-    next_chunk = chunk->next;
-    
-    // is the next chunk on the list from the same mmap call?
-    if (chunk->base_ptr == next_chunk->base_ptr) {
-        //is the next chunk "empty"
-        if (!next_chunk->inuse) {
-            
-            // lets join this together
-            chunk->size += next_chunk->size;
-            chunk->next = next_chunk->next;
-            
-            // remove the extra pointer
-            munmap(next_chunk, sizeof(struct _wc_chunk));
-        }
-    }
-}
+void *find_first_fit(size_t size) {
+	int new_pages = 0;
+	unsigned long new_size = 0;
+	unsigned long scan_size = size + _HHEADER_SIZE;
+	unsigned long heap_item_size = 0;
+	void *scan_heap = NULL;
+	void *tmp_heap_end = NULL;
 
-static void split_chunk (struct _wc_chunk *chunk, size_t size) {
-  struct _wc_chunk *new_chunk;
-  size_t new_size;
-  
-  if ((chunk == NULL) || (size >= chunk->size))
-    return;
-  
-  new_size = chunk->size - size;
-  new_chunk = mmap(NULL, sizeof(struct _wc_chunk), PROT_READ | PROT_WRITE, MAP_ANONYMOUS, 0, 0);
-  new_chunk->next = chunk->next;
-  new_chunk->ptr = chunk->ptr + size;
-  new_chunk->size = new_size;
-  new_chunk->inuse = 0;
-  new_chunk->base_ptr = chunk->base_ptr;
-  new_chunk->base_size = chunk->base_size;
-  chunk->next = new_chunk;
-  chunk->size = size;
-}
+	scan_heap = base_heap;
+	do {
+		heap_item_size = *(unsigned long *) scan_heap & scan_filter;
+		// is heap item free
+		if (*(unsigned long *) scan_heap <= scan_filter) {
+			// is heap item big enough?
+			if (scan_size <= heap_item_size) {
+				*(unsigned long *) scan_heap = (unsigned long) scan_size | msbL;
 
-struct _wc_chunk *fit_chunk (size_t size) {
-    struct _wc_chunk *seek_chunk = wc_chunks;
-    
-    do {
-        if (!seek_chunk->inuse) {
-            if (seek_chunk->size >= size) {
-                break;
-            }
-        }
-        seek_chunk = seek_chunk->next;
-    } while (seek_chunk != NULL);
-    
-    return seek_chunk;
-}
+				// do we have room to split?
+				heap_item_size -= scan_size;
+				if ((_HHEADER_SIZE * 2) <= heap_item_size) {
+					// split it out
+					*(unsigned long *)(scan_heap + scan_size) = heap_item_size;
+				} else {
+					soft_heap_end = scan_heap + scan_size;
+				}
+				// return writable heap location
+				return (scan_heap + _HHEADER_SIZE);
+			}
+		}
+		scan_heap += heap_item_size;
+	} while (scan_heap < soft_heap_end);
 
-// Initialise the heap index
-int init_wc_mem() {
-    _wc_new_chunk(sysconf(_SC_PAGESIZE));
-    return 0;
-}
+	// no large enough free space found so lets get space from the system.
+	new_pages = (scan_size / page_size) + MIN_PAGE_GRAB;
+	new_size = new_pages * page_size;
+	tmp_heap_end = sbrk(new_size);
 
-// Clean up the heap index
-void shudown_wc_mem() {
-    struct _wc_chunk *seek_chunk = wc_chunks;
-    struct _wc_chunk *next_chunk = NULL;
-    void *prev_ptr = NULL;
-    do {
-        next_chunk = seek_chunk->next;
-        if (seek_chunk->base_ptr != prev_ptr) {
-            prev_ptr = seek_chunk->base_ptr;
-            munmap(seek_chunk->base_ptr, seek_chunk->base_ptr);
-        }
-        munmap(seek_chunk, sizeof(struct _wc_chunk));
-        seek_chunk = next_chunk;
-    } while (seek_chunk != NULL);
-}
+	if (tmp_heap_end == (void *) -1) {
+		return NULL;
+	}
 
-// return the chunk data that contains *ptr
-static struct _wc_chunk *get_chunk (void *ptr) {
-    struct _wc_chunk *chunk_seek = wc_chunks;
-    
-    if (ptr == NULL)
-        return NULL;
-    
-    do {
-        if (chunk_seek->ptr == ptr) {
-            return chunk_seek;
-        }
-        chunk_seek = chunk_seek->next;
-    } while (chunk_seek != NULL);
-    return NULL;
+	*(unsigned long *) (scan_heap + scan_size) = (unsigned long) (new_size
+			+ (heap_end - soft_heap_end) - scan_size);
+	*(unsigned long *) scan_heap = scan_size | msbL;
+	heap_end += new_size;
+	soft_heap_end = heap_end;
+
+	return (scan_heap + _HHEADER_SIZE);
 }
 
 void wc_free(void *ptr) {
-    struct _wc_chunk *chunk_seek = wc_chunks;
-    struct _wc_chunk *prev_chunk = NULL;
-    
-    if (ptr == NULL)
-        return;
-    
-    do {
-        if (chunk_seek->ptr == ptr) {
-            chunk_seek->inuse = 0;
-            // check if next chunk from same mmap call and free
-            check_next_chunk(chunk_seek);
-            // check if previous chunk form same mmap call and free
-            check_next_chunk(prev_chunk);
-            // no more to do here
-            return;
-        }
-        prev_chunk = chunk_seek;
-        chunk_seek = chunk_seek->next;
-    } while (chunk_seek != NULL);
-
-}
-
-void *wc_realloc(void *ptr, size_t size) {
-    struct _wc_chunk *old_chunk = NULL;
-    struct _wc_chunk *chunk = NULL;
-    struct _wc_chunk *new_chunk = NULL;
-    size_t new_size = 0;
-    
-    if (!size)
-        return NULL;
-    
-    if (ptr) {
-        
-        old_chunk = get_chunk(ptr);
-        check_next_chunk(old_chunk);
-        
-    } else {
-        chunk = fit_chunk(size);
-        if (chunk == NULL) {
-            chunk = _wc_new_chunk(size);
-        }
-    }
-    
-    if (size < chunk->size) {
-        new_size = chunk->size - size;
-        new_chunk = mmap(NULL, sizeof(struct _wc_chunk), PROT_READ | PROT_WRITE, MAP_ANONYMOUS, 0, 0);
-        new_chunk->next = chunk->next;
-        new_chunk->ptr = chunk->ptr + size;
-        new_chunk->size = new_size;
-        new_chunk->inuse = 0;
-        new_chunk->base_ptr = chunk->base_ptr;
-        new_chunk->base_size = chunk->base_size;
-        chunk->next = new_chunk;
-        chunk->size = size;
-    }
-    chunk->inuse = 1;
-    return chunk;
+	void *tmp_ptr = NULL;
+	long size = 0;
+	if ((ptr < base_heap) || (ptr > heap_end)) {
+		errno = EFAULT;
+		signal(SIGSEGV, SIG_ERR);
+		return;
+	}
+	tmp_ptr = ptr - _HHEADER_SIZE;
+	*(long *) tmp_ptr &= scan_filter;
 }
 
 void *wc_malloc(size_t size) {
-    return wc_realloc(NULL, size);
+	if (size == 0)
+		return NULL;
+	return find_first_fit(size);
+}
+
+void *wc_realloc(void *ptr, size_t size) {
+	void *ret_ptr  = NULL;
+
+	// If size is zero treat as free
+	if (size == 0) {
+		if (ptr != NULL) {
+			wc_free(ptr);
+		}
+		return NULL;
+	} else {
+		// feeling lazy, give'm a new address
+		ret_ptr = wc_malloc(size);
+		if (ptr != NULL) {
+			memmove(ret_ptr, ptr, (((long)(ptr - _HHEADER_SIZE)) & scan_filter));
+			wc_free(ptr);
+		}
+		return ret_ptr;
+	}
 }
 
 void *wc_calloc(size_t nmemb, size_t size) {
-    return wc_realloc(NULL, (nmemb * size));
+	if ((nmemb == 0) || (size == 0))
+		return NULL;
+
+	return wc_malloc(nmemb * size);
 }
+

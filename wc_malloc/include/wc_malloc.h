@@ -22,13 +22,11 @@
 
 #include <stdio.h>
 
-extern int init_wc_mem();
-
+extern int wc_malloc_init();
 extern void *wc_malloc(size_t size);
 extern void *wc_realloc(void *ptr, size_t size);
 extern void *wc_calloc(size_t nmemb, size_t size);
 extern void wc_free(void *ptr);
 
-extern void shudown_wc_mem();
 
 #endif /* wc_malloc_h */
