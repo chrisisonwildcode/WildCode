@@ -17,8 +17,29 @@
   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <stdint.h>
+
 #include "convert.h"
 
-char *prepare_wav(char *wav_file) {
+/*
+ * Developer note
+ *
+ * Result should consist of a header + data
+ * uint8_t channels
+ * uint32_t rate
+ * uint32_t size
+ * uint8_t data[size]
+ *
+ * The samples are stored as int16_t with interleaving for 2 or more channels
+ * ie: 0xLLLL 0xRRRR 0xLLLL 0xRRRR
+ */
+void *prepare_wav(void *wav_data) {
+	uint32_t size = *(uint32_t *)wav_data;
+	uint16_t channels = 0;
+	uint32_t rate = 0;
+	uint8_t *read_ptr = (uint8_t *)wav_data + 4;
+
+
+	// check file format
 
 }

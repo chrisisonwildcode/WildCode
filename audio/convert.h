@@ -20,6 +20,6 @@
 #ifndef _CONVERT_H
 #define _CONVERT_H
 
-extern char *prepare_wav(char *wav_file);
+extern void *prepare_wav(void *wav_file);
 
 #endif // _CONVERT_H
