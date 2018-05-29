@@ -39,7 +39,9 @@ void *prepare_wav(void *wav_data) {
 	uint32_t rate = 0;
 	uint8_t *read_ptr = (uint8_t *)wav_data + 4;
 
+    if (strncmp(*(char *)read_ptr, “WAVE”, 4)) {
 
+    }
 	// check file format
 
 }
